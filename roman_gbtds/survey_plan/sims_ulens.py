@@ -6,16 +6,6 @@ from bagle import sensitivity
 from bagle import model
 from astropy.table import Table
 
-def make_binary_orbit_lc():
-    """
-    Make Roman lightcurves with binary lenses, binary sources, and orbital motion.
-    Per request by Dave Bennett on 2024-07-26.
-    """
-    return
-
-def generate_roman_time_samples():
-    return
-
 
 def make_roman_lightcurve(mod, t, mod_filt_idx=0, filter_name='F146',
                           noise=True, tint=57, verbose=False, plot=True):
