@@ -277,6 +277,12 @@ def get_times_roman_gbtds(seasons_fast=(0, 1, 2, 7, 8, 9),
         restarting the sequence. During slow seasons, this is typically
         several days.
 
+    Returns
+    -------
+    t_f146 : numpy.array
+        Times in the F146 filter.
+    t_f087 : numpy.array
+        Times in the F087 filter.
     """
     # Galactic Center (hopefully will be in GBTDS)
     gc_coord = SkyCoord('17:40:40.04 -29:00:28.0', unit=(u.hourangle, u.deg),
