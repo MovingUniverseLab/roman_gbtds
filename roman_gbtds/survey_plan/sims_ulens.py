@@ -8,7 +8,8 @@ from astropy.table import Table
 
 
 def make_roman_lightcurve(mod, t, mod_filt_idx=0, filter_name='F146',
-                          noise=True, tint=57, verbose=False, plot=True):
+                          noise=True, tint=57, verbose=False, plot=True, 
+                          zoom_tE_val = 3., time_window = 3.):
     """
     Given a BAGLE model, generate photometric and astrometric data
 
@@ -31,6 +32,12 @@ def make_roman_lightcurve(mod, t, mod_filt_idx=0, filter_name='F146',
         Print out quantities along the way.
     plot : bool
         Make plots of the photometry and astrometry lightcurves.
+    zoom_tE_val : float
+        When plotting zoomed in values, indicates range time tE to plot.
+        (i.e. zoom_tE_val = 3 plots (-3tE + t0, 3tE + t0)).
+    time_window : float
+        When plotting time average astrometry controls window in DAYS to
+        average over.
 
     """
     # https: // roman.gsfc.nasa.gov / science / WFI_technical.html
@@ -103,11 +110,11 @@ def make_roman_lightcurve(mod, t, mod_filt_idx=0, filter_name='F146',
         ast_unlensed = mod.get_astrometry_unlensed(t, filt_idx=mod_filt_idx) * 1e3
         ast_resid = ast - ast_unlensed
 
-        time_window = 3 # days
+        #time_window = 3 # days
         t_bin, ast_x_res_bin = moving_average(t, ast_resid[:, 0], time_window)
         t_bin, ast_y_res_bin = moving_average(t, ast_resid[:, 1], time_window)
 
-        zoom_dt = [mod.t0 - 3*mod.tE, mod.t0 + 3*mod.tE]
+        zoom_dt = [mod.t0 - zoom_tE_val*mod.tE, mod.t0 + zoom_tE_val*mod.tE]
 
         plt_msc = [['F1', 'AA', 'A1'],
                    ['F1', 'AA', 'A2'],
@@ -156,7 +163,7 @@ def make_roman_lightcurve(mod, t, mod_filt_idx=0, filter_name='F146',
 
 
         # Astrometry residuals on sky
-        ast_res_rng = np.max([np.std(ast_x_res_bin), np.std(ast_y_res_bin)]) * 3.0
+        ast_res_rng = np.max([np.std(ast_x_res_bin), np.std(ast_y_res_bin)]) #* 4.0
 
         axs['BB'].errorbar(ast_x_res_bin, ast_y_res_bin,
                            ls='none', marker='.', alpha=0.2)
@@ -354,7 +361,7 @@ def run_fisher_analysis_vs_cadence(list_models, t_f146, list_of_tdx, mp_pool_siz
     return fisher_pnames, fisher_cov_mat
 
 
-def moving_average(time, value, time_window):
+def moving_average(time, value, time_window, errors = None):
     """
     Calculate moving average over a time window for the value array.
     """
@@ -363,15 +370,24 @@ def moving_average(time, value, time_window):
     inds = np.digitize(time, time_window_edges)
     new_value = []
     new_time = []
+    if errors is not None:
+        new_error = []
     seen = set()
     for bin_idx in inds:
         if bin_idx not in seen:
             bin_arr = value[inds == bin_idx]
             tim_arr = time[inds == bin_idx]
+            if errors is not None:
+                err_arr = errors[inds == bin_idx]
             if len(bin_arr) > 0:
                 new_value.append([np.mean(bin_arr)])
                 new_time.append([np.mean(tim_arr)])
+                if errors is not None:
+                    new_error.append([np.sqrt(np.sum(err_arr**2))/len(err_arr)])
                 seen.add(bin_idx)
 
-    return new_time, new_value
+    if errors is not None:
+        return new_time, new_value, new_error
+    else:
+        return new_time, new_value
 
