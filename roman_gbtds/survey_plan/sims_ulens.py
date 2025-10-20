@@ -1,15 +1,23 @@
+import erfa
+import warnings
+warnings.filterwarnings('ignore', category=erfa.ErfaWarning, append=True)
+
 import numpy as np
 import pylab as plt
 import time
+import pickle
 from bagle import sensitivity
 
 from bagle import model
 from astropy.table import Table
+from astropy.time import Time
+from flystar import motion_model
 
 
 def make_roman_lightcurve(mod, t, mod_filt_idx=0, filter_name='F146',
                           noise=True, tint=57, verbose=False, plot=True, 
-                          zoom_tE_val = 3., time_window = 3.):
+                          zoom_tE_val = 3., time_window = 3.,
+                          outdir='lightcurves/', outfile_suffix=''):
     """
     Given a BAGLE model, generate photometric and astrometric data
 
@@ -39,6 +47,13 @@ def make_roman_lightcurve(mod, t, mod_filt_idx=0, filter_name='F146',
         When plotting time average astrometry controls window in DAYS to
         average over.
 
+    Output
+    ------
+    data_table : astropy.table
+        Astropy table containing magnitudes and astrometric positions over time.
+        Table columns are t, x, y, xe, ye with all positions in milli-arcseconds
+        and time in MJD.
+    
     """
     # https: // roman.gsfc.nasa.gov / science / WFI_technical.html
     # Zeropoints are the 57 sec point source, 5 sigma.
@@ -110,9 +125,26 @@ def make_roman_lightcurve(mod, t, mod_filt_idx=0, filter_name='F146',
         ast_unlensed = mod.get_astrometry_unlensed(t, filt_idx=mod_filt_idx) * 1e3
         ast_resid = ast - ast_unlensed
 
+        
+        # Also make a model curve with 0.5 day time sampling.
+        t_mod = np.arange(t.min(), t.max(), 0.5)
+        try:
+            img_mod, amp_mod = mod.get_all_arrays(t_mod, filt_idx=mod_filt_idx)
+            mag_mod = mod.get_photometry(t_mod, filt_idx=mod_filt_idx, amp_arr=amp)
+            ast_mod = 1e3 * mod.get_astrometry(t_mod, filt_idx=mod_filt_idx, image_arr=img, amp_arr=amp)
+
+            mag_mod = mag_mod.reshape(len(t_mod))
+        except:
+            mag_mod = mod.get_photometry(t_mod, filt_idx=mod_filt_idx)
+            ast_mod = 1e3 * mod.get_astrometry(t_mod, filt_idx=mod_filt_idx)
+        
+        ast_unlensed_mod = mod.get_astrometry_unlensed(t_mod, filt_idx=mod_filt_idx) * 1e3
+        ast_resid_mod = ast_mod - ast_unlensed_mod
+        
+
         #time_window = 3 # days
-        t_bin, ast_x_res_bin = moving_average(t, ast_resid[:, 0], time_window)
-        t_bin, ast_y_res_bin = moving_average(t, ast_resid[:, 1], time_window)
+        t_bin, ast_x_res_bin, ast_xe_res_bin = moving_average(t, ast_resid[:, 0], time_window, errors=tab[f'xe_{filter_name}'])
+        t_bin, ast_y_res_bin, ast_ye_res_bin = moving_average(t, ast_resid[:, 1], time_window, errors=tab[f'ye_{filter_name}'])
 
         zoom_dt = [mod.t0 - zoom_tE_val*mod.tE, mod.t0 + zoom_tE_val*mod.tE]
 
@@ -121,17 +153,20 @@ def make_roman_lightcurve(mod, t, mod_filt_idx=0, filter_name='F146',
                    ['F2', 'BB', 'B1'],
                    ['F2', 'BB', 'B2']]
         fig, axs = plt.subplot_mosaic(plt_msc,
-                                      figsize=(16, 8),
-                                      tight_layout=True)
+                                      figsize=(16, 8))
+        plt.subplots_adjust(left=0.1, hspace=1.2, wspace=0.5, top=0.92)
 
         # Photometry vs. time
         axs['F1'].errorbar(t, mag, yerr=mag_err, label=filter_name,
                            ls='none', marker='.', alpha=0.2)
+        axs['F1'].plot(t_mod, mag_mod, ls='-', marker='None', zorder=50)
         axs['F1'].set_ylabel(f'{filter_name} mag')
+        axs['F1'].axvline(mod.t0, ls='--', color='grey')
         axs['F1'].invert_yaxis()
 
         # Photometry vs. time -- zoomed
         axs['F2'].errorbar(t, mag, yerr=mag_err, ls='none', marker='.', alpha=0.2)
+        axs['F2'].plot(t_mod, mag_mod, ls='-', marker='None', zorder=50)
         axs['F2'].axvline(mod.t0, ls='-', color='grey')
         axs['F2'].axvline(mod.t0 - mod.tE, ls='--', color='grey')
         axs['F2'].axvline(mod.t0 + mod.tE, ls='--', color='grey')
@@ -144,102 +179,259 @@ def make_roman_lightcurve(mod, t, mod_filt_idx=0, filter_name='F146',
         axs['AA'].errorbar(tab[f'x_{filter_name}'], tab[f'y_{filter_name}'],
                            xerr=tab[f'xe_{filter_name}'], yerr=tab[f'ye_{filter_name}'],
                            ls='none', marker='.', alpha=0.2)
+        axs['AA'].plot(ast_mod[:, 0], ast_mod[:, 1], ls='-', marker='None', zorder=50)
         axs['AA'].set_xlabel(f'$\Delta\\alpha \cos \delta$ (mas)')
         axs['AA'].set_ylabel(f'$\Delta\delta$ (mas)')
 
         # Astrometry vs. time - East
         axs['A1'].errorbar(tab[f't_{filter_name}'], tab[f'x_{filter_name}'], yerr=tab[f'xe_{filter_name}'],
                            ls='none', marker='.', alpha=0.2)
+        axs['A1'].plot(t_mod, ast_mod[:, 0], ls='-', marker='None', zorder=50)
         axs['A1'].set_xlabel(f'Time (MJD)')
-        axs['A1'].set_ylabel(f'$\Delta\\alpha \cos \delta$ (mas)')
+        axs['A1'].set_ylabel(f'$\Delta\\alpha \cos \delta$\n(mas)')
         axs['A1'].sharex(axs['F1'])
 
         # Astrometry vs. time - North
         axs['A2'].errorbar(tab[f't_{filter_name}'], tab[f'y_{filter_name}'], yerr=tab[f'ye_{filter_name}'],
                            ls='none', marker='.', alpha=0.2)
+        axs['A2'].plot(t_mod, ast_mod[:, 1], ls='-', marker='None', zorder=50)
         axs['A2'].set_xlabel(f'Time (MJD)')
-        axs['A2'].set_ylabel(f'$\Delta\delta$ (mas)')
+        axs['A2'].set_ylabel(f'$\Delta\delta$\n(mas)')
         axs['A2'].sharex(axs['F1'])
 
 
         # Astrometry residuals on sky
-        ast_res_rng = np.max([np.std(ast_x_res_bin), np.std(ast_y_res_bin)]) #* 4.0
+        ast_res_rng = np.max([np.std(ast_x_res_bin), np.std(ast_y_res_bin), np.median(ast_xe_res_bin)]) * 3.0
+        if ~np.isfinite(ast_res_rng):
+            ast_res_rng = 1.0 # mas
 
         axs['BB'].errorbar(ast_x_res_bin, ast_y_res_bin,
+                           xerr=ast_xe_res_bin, yerr=ast_ye_res_bin,
                            ls='none', marker='.', alpha=0.2)
-        # axs['BB'].errorbar(ast_resid[:, 0], ast_resid[:, 1],
-        #                    #xerr=tab[f'xe_{filter_name}'], yerr=tab[f'ye_{filter_name}'],
-        #                    ls='none', marker='.', alpha=0.2)
+        axs['BB'].plot(ast_resid_mod[:, 0], ast_resid_mod[:, 1], ls='-', marker='None', zorder=50)
         axs['BB'].set_xlabel(f'Lensing Signal\n $\Delta\\alpha \cos \delta$ (mas)')
         axs['BB'].set_ylabel(f'Lensing Signal\n $\Delta\delta$ (mas)')
         axs['BB'].set_xlim([-ast_res_rng, ast_res_rng])
         axs['BB'].set_ylim([-ast_res_rng, ast_res_rng])
 
         # Astrometry vs. time - East
-        axs['B1'].errorbar(t_bin, ast_x_res_bin,
-                           ls='none', marker='.', alpha=0.2)
+        axs['B1'].errorbar(t_bin, ast_x_res_bin, yerr=ast_xe_res_bin,
+                           ls='none', marker='.')
+        axs['B1'].plot(t_mod, ast_resid_mod[:, 0], ls='-', marker='None', zorder=50)
         axs['B1'].set_ylim([-ast_res_rng, ast_res_rng])
-        # axs['B1'].errorbar(tab[f't_{filter_name}'], ast_resid[:, 0], #, yerr=tab[f'xe_{filter_name}'],
-        #                    ls='none', marker='.', alpha=0.2)
+        axs['B1'].axvline(mod.t0, ls='-', color='grey')
+        axs['B1'].axvline(mod.t0 - mod.tE, ls='--', color='grey')
+        axs['B1'].axvline(mod.t0 + mod.tE, ls='--', color='grey')
         axs['B1'].set_xlabel(f'Time (MJD)')
-        axs['B1'].set_ylabel(f'$\Delta\\alpha \cos \delta$ (mas)')
+        axs['B1'].set_ylabel(f'$\Delta\\alpha \cos \delta$\n(mas)')
         axs['B1'].sharex(axs['F2'])
         axs['B1'].set_title(f'Rolling {time_window} day avg')
         axs['B1'].axhline(0, color='k', ls='--')
 
         # Astrometry vs. time - North
-        axs['B2'].errorbar(t_bin, ast_y_res_bin,
-                           ls='none', marker='.', alpha=0.2)
-        # axs['B2'].errorbar(tab[f't_{filter_name}'], ast_resid[:, 1], #, yerr=tab[f'ye_{filter_name}'],
-        #                    ls='none', marker='.', alpha=0.2)
+        axs['B2'].errorbar(t_bin, ast_y_res_bin, yerr=ast_ye_res_bin,
+                           ls='none', marker='.')
+        axs['B2'].plot(t_mod, ast_resid_mod[:, 1], ls='-', marker='None', zorder=50)
         axs['B2'].set_ylim([-ast_res_rng, ast_res_rng])
+        axs['B2'].axvline(mod.t0, ls='-', color='grey')
+        axs['B2'].axvline(mod.t0 - mod.tE, ls='--', color='grey')
+        axs['B2'].axvline(mod.t0 + mod.tE, ls='--', color='grey')
         axs['B2'].set_xlabel(f'Time (MJD)')
-        axs['B2'].set_ylabel(f'$\Delta\delta$ (mas)')
+        axs['B2'].set_ylabel(f'$\Delta\delta$\n(mas)')
         axs['B2'].sharex(axs['F2'])
         axs['B2'].axhline(0, color='k', ls='--')
 
+        # Print parameters at the top.
+        mod_class = mod.__class__.__name__.split('_')[0]
+        title = f'{mod_class:5s}: M_L={mod.mL:.2f} Msun, piRel={mod.piRel:.2f} mas, '
+        title += f'thetaE={mod.thetaE_amp:.1f} mas, muRel={mod.muRel_amp:.1f} mas/yr, '
+        if 'PSBL' in mod_class:
+            title += f'M_L1={mod.mLp:.2f} Msun, M_L2={mod.mLs:.2f} Msun, sepL={mod.sep:.1f} mas, qL={mod.q:.2f} '
+        if 'BSPL' in mod_class:
+            title += f'sepS={mod.sep:.1f} mas '
+            if ~np.isnan(mod.fratio_bin[0]):
+                title += f'fratioS={mod.fratio_bin[0]:.1f} '
+            else:
+                title += f'fratioS=nan '
+        if 'BSBL' in mod_class:
+            title += f'M_L1={mod.mLp:.2f} Msun, M_L2={mod.mLs:.2f} Msun, sepL={mod.sepL:.1f} mas, qL={mod.q:.2f} '
+            title += f'sepS={mod.sepS:.1f} mas '
+            title += f'dmagS={mod.mag_src_pri[0]-mod.mag_src_sec[0]:.1f} '
+            
+                
+        axs['AA'].set_title(title, fontsize=16, y=1.05)
 
-        # Print out all the parameters to the screen and in a YAML file.
-        # params_mod = mod.fitter_param_names + mod.phot_param_names
-        # params_mod_fix = mod.fixed_param_names
+        plt.savefig(f'{outdir}/roman_event_lcurves_{filter_name}_{outfile_suffix}.png')
+        plt.close('all')
 
-        # loc_vars = locals()
-        # pdict_mod = {}
-        # for par in params_mod:
-        #     pdict_mod[par] = mod_vars[par]
-        #
-        # pdict_mod_fix = {}
-        # for par in params_mod_fix:
-        #     pdict_mod_fix[par] = loc_vars[par]
-        #
-        # print(pdict_mod)
-        # print(pdict_mod_fix)
-
-        #plt.savefig(f'{outdir}/roman_event_lcurves_{ff:04d}.png')
-
-        # Make lens geometry plot.
-        #plt.close('all')
-        #plot_models.plot_PSBL(psbl_par, outfile=f'{outdir}/roman_event_geom_{ff:04d}.png')
-
-        # Save parameters to YAML file.
-        # param_save_file = f'{outdir}/roman_event_params_{ff:04d}.pkl'
-        # param_save_data = {}
-        # param_save_data['model_class'] = psbl_par.__class__
-        # param_save_data['model_params'] = pdict_mod
-        # param_save_data['model_params_fix'] = pdict_mod_fix
-        # param_save_data['model_params_add'] = pdict_add
-        #
-        # with open(param_save_file, 'wb') as f:
-        #     pickle.dump(param_save_data, f)
-        #
-        # # Save the data to an astropy FITS table. We have one for each filter.
-        # tab.write(f'{outdir}/roman_event_w149_data_{ff:04d}.fits', overwrite=True)
-        # tab_f087.write(f'{outdir}/roman_event_f087_data_{ff:04d}.fits', overwrite=True)
-        #
-        # print(tab.colnames)
-        #
+    # Save parameters to YAML file.
+    model_save_file = f'{outdir}/roman_event_model_{filter_name}_{outfile_suffix}.pkl'
+    with open(model_save_file, 'wb') as f:
+        pickle.dump(mod, f)
+        
+    # Save the data to an astropy FITS table. We have one for each filter.
+    tab.write(f'{outdir}/roman_event_data_{filter_name}_{outfile_suffix}.fits', overwrite=True)
+        
 
     return tab
+
+
+def plot_roman_lightcurve(mod, tab, t, mod_filt_idx, filter_name,
+                          time_window=3, zoom_tE_val=5,
+                          outdir='lightcurves/', outfile_suffix=''):
+    """
+    Plot a Roman lightcurve. 
+    """
+
+    ast = np.array([tab[f'x_{filter_name}'], tab[f'y_{filter_name}']]).T
+    ast_err = np.array([tab[f'xe_{filter_name}'], tab[f'ye_{filter_name}']]).T
+    mag = tab[f'm_{filter_name}']
+    mag_err = tab[f'me_{filter_name}']
+    
+    print(ast.shape)
+
+    # Determine the lensed - unlensed astrometry residuals.
+    ast_unlensed = mod.get_astrometry_unlensed(t, filt_idx=mod_filt_idx) * 1e3
+    ast_resid = ast - ast_unlensed
+    
+    # Also make a model curve with 0.5 day time sampling.
+    t_mod = np.arange(t.min(), t.max(), 0.5)
+    try:
+        img_mod, amp_mod = mod.get_all_arrays(t_mod, filt_idx=mod_filt_idx)
+        mag_mod = mod.get_photometry(t_mod, filt_idx=mod_filt_idx, amp_arr=amp)
+        ast_mod = 1e3 * mod.get_astrometry(t_mod, filt_idx=mod_filt_idx, image_arr=img, amp_arr=amp)
+
+        mag_mod = mag_mod.reshape(len(t_mod))
+    except:
+        mag_mod = mod.get_photometry(t_mod, filt_idx=mod_filt_idx)
+        ast_mod = 1e3 * mod.get_astrometry(t_mod, filt_idx=mod_filt_idx)
+    
+    ast_unlensed_mod = mod.get_astrometry_unlensed(t_mod, filt_idx=mod_filt_idx) * 1e3
+    ast_resid_mod = ast_mod - ast_unlensed_mod
+    
+
+    #time_window = 3 # days
+    t_bin, ast_x_res_bin, ast_xe_res_bin = moving_average(t, ast_resid[:, 0], time_window, errors=tab[f'xe_{filter_name}'])
+    t_bin, ast_y_res_bin, ast_ye_res_bin = moving_average(t, ast_resid[:, 1], time_window, errors=tab[f'ye_{filter_name}'])
+
+    zoom_dt = [mod.t0 - zoom_tE_val*mod.tE, mod.t0 + zoom_tE_val*mod.tE]
+
+    plt_msc = [['F1', 'AA', 'A1'],
+               ['F1', 'AA', 'A2'],
+               ['F2', 'BB', 'B1'],
+               ['F2', 'BB', 'B2']]
+    fig, axs = plt.subplot_mosaic(plt_msc,
+                                  figsize=(16, 8))
+    plt.subplots_adjust(left=0.1, hspace=1.2, wspace=0.5, top=0.92)
+
+    # Photometry vs. time
+    axs['F1'].errorbar(t, mag, yerr=mag_err, label=filter_name,
+                       ls='none', marker='.', alpha=0.2)
+    axs['F1'].plot(t_mod, mag_mod, ls='-', marker='None', zorder=50)
+    axs['F1'].set_ylabel(f'{filter_name} mag')
+    axs['F1'].axvline(mod.t0, ls='--', color='grey')
+    axs['F1'].invert_yaxis()
+
+    # Photometry vs. time -- zoomed
+    axs['F2'].errorbar(t, mag, yerr=mag_err, ls='none', marker='.', alpha=0.2)
+    axs['F2'].plot(t_mod, mag_mod, ls='-', marker='None', zorder=50)
+    axs['F2'].axvline(mod.t0, ls='-', color='grey')
+    axs['F2'].axvline(mod.t0 - mod.tE, ls='--', color='grey')
+    axs['F2'].axvline(mod.t0 + mod.tE, ls='--', color='grey')
+    axs['F2'].set_ylabel(f'Zoomed\n {filter_name} mag')
+    axs['F2'].set_xlabel('Time (MJD)')
+    axs['F2'].invert_yaxis()
+    axs['F2'].set_xlim(zoom_dt)
+
+    # Astrometry on sky
+    axs['AA'].errorbar(tab[f'x_{filter_name}'], tab[f'y_{filter_name}'],
+                       xerr=tab[f'xe_{filter_name}'], yerr=tab[f'ye_{filter_name}'],
+                       ls='none', marker='.', alpha=0.2)
+    axs['AA'].plot(ast_mod[:, 0], ast_mod[:, 1], ls='-', marker='None', zorder=50)
+    axs['AA'].set_xlabel(f'$\Delta\\alpha \cos \delta$ (mas)')
+    axs['AA'].set_ylabel(f'$\Delta\delta$ (mas)')
+
+    # Astrometry vs. time - East
+    axs['A1'].errorbar(tab[f't_{filter_name}'], tab[f'x_{filter_name}'], yerr=tab[f'xe_{filter_name}'],
+                       ls='none', marker='.', alpha=0.2)
+    axs['A1'].plot(t_mod, ast_mod[:, 0], ls='-', marker='None', zorder=50)
+    axs['A1'].set_xlabel(f'Time (MJD)')
+    axs['A1'].set_ylabel(f'$\Delta\\alpha \cos \delta$\n(mas)')
+    axs['A1'].sharex(axs['F1'])
+
+    # Astrometry vs. time - North
+    axs['A2'].errorbar(tab[f't_{filter_name}'], tab[f'y_{filter_name}'], yerr=tab[f'ye_{filter_name}'],
+                       ls='none', marker='.', alpha=0.2)
+    axs['A2'].plot(t_mod, ast_mod[:, 1], ls='-', marker='None', zorder=50)
+    axs['A2'].set_xlabel(f'Time (MJD)')
+    axs['A2'].set_ylabel(f'$\Delta\delta$\n(mas)')
+    axs['A2'].sharex(axs['F1'])
+
+
+    # Astrometry residuals on sky
+    ast_res_rng = np.max([np.std(ast_x_res_bin), np.std(ast_y_res_bin), np.median(ast_xe_res_bin)]) * 3.0
+    if ~np.isfinite(ast_res_rng):
+        ast_res_rng = 1.0 # mas
+
+    axs['BB'].errorbar(ast_x_res_bin, ast_y_res_bin,
+                       xerr=ast_xe_res_bin, yerr=ast_ye_res_bin,
+                       ls='none', marker='.', alpha=0.2)
+    axs['BB'].plot(ast_resid_mod[:, 0], ast_resid_mod[:, 1], ls='-', marker='None', zorder=50)
+    axs['BB'].set_xlabel(f'Lensing Signal\n $\Delta\\alpha \cos \delta$ (mas)')
+    axs['BB'].set_ylabel(f'Lensing Signal\n $\Delta\delta$ (mas)')
+    axs['BB'].set_xlim([-ast_res_rng, ast_res_rng])
+    axs['BB'].set_ylim([-ast_res_rng, ast_res_rng])
+
+    # Astrometry vs. time - East
+    axs['B1'].errorbar(t_bin, ast_x_res_bin, yerr=ast_xe_res_bin,
+                       ls='none', marker='.')
+    axs['B1'].plot(t_mod, ast_resid_mod[:, 0], ls='-', marker='None', zorder=50)
+    axs['B1'].set_ylim([-ast_res_rng, ast_res_rng])
+    axs['B1'].axvline(mod.t0, ls='-', color='grey')
+    axs['B1'].axvline(mod.t0 - mod.tE, ls='--', color='grey')
+    axs['B1'].axvline(mod.t0 + mod.tE, ls='--', color='grey')
+    axs['B1'].set_xlabel(f'Time (MJD)')
+    axs['B1'].set_ylabel(f'$\Delta\\alpha \cos \delta$\n(mas)')
+    axs['B1'].sharex(axs['F2'])
+    axs['B1'].set_title(f'Rolling {time_window} day avg')
+    axs['B1'].axhline(0, color='k', ls='--')
+
+    # Astrometry vs. time - North
+    axs['B2'].errorbar(t_bin, ast_y_res_bin, yerr=ast_ye_res_bin,
+                       ls='none', marker='.')
+    axs['B2'].plot(t_mod, ast_resid_mod[:, 1], ls='-', marker='None', zorder=50)
+    axs['B2'].set_ylim([-ast_res_rng, ast_res_rng])
+    axs['B2'].axvline(mod.t0, ls='-', color='grey')
+    axs['B2'].axvline(mod.t0 - mod.tE, ls='--', color='grey')
+    axs['B2'].axvline(mod.t0 + mod.tE, ls='--', color='grey')
+    axs['B2'].set_xlabel(f'Time (MJD)')
+    axs['B2'].set_ylabel(f'$\Delta\delta$\n(mas)')
+    axs['B2'].sharex(axs['F2'])
+    axs['B2'].axhline(0, color='k', ls='--')
+
+    # Print parameters at the top.
+    mod_class = mod.__class__.__name__.split('_')[0]
+    title = f'{mod_class:5s}: M_L={mod.mL:.2f} Msun, piRel={mod.piRel:.2f} mas, '
+    title += f'thetaE={mod.thetaE_amp:.1f} mas, muRel={mod.muRel_amp:.1f} mas/yr, '
+    if 'PSBL' in mod_class:
+        title += f'M_L1={mod.mLp:.2f} Msun, M_L2={mod.mLs:.2f} Msun, sepL={mod.sep:.1f} mas, qL={mod.q:.2f} '
+    if 'BSPL' in mod_class:
+        title += f'sepS={mod.sep:.1f} mas '
+        if ~np.isnan(mod.fratio_bin[0]):
+            title += f'fratioS={mod.fratio_bin[0]:.1f} '
+        else:
+            title += f'fratioS=nan '
+    if 'BSBL' in mod_class:
+        title += f'M_L1={mod.mLp:.2f} Msun, M_L2={mod.mLs:.2f} Msun, sepL={mod.sepL:.1f} mas, qL={mod.q:.2f} '
+        title += f'sepS={mod.sepS:.1f} mas '
+        title += f'dmagS={mod.mag_src_pri[0]-mod.mag_src_sec[0]:.1f} '
+        
+            
+    axs['AA'].set_title(title, fontsize=16, y=1.05)
+
+    plt.savefig(f'{outdir}/roman_event_lcurves_{filter_name}_{outfile_suffix}.png')
+    
+    return
 
 
 def get_times_roman_gbtds(seasons_fast=(0, 1, 2, 7, 8, 9),
@@ -556,10 +748,10 @@ def moving_average(time, value, time_window, errors = None):
             if errors is not None:
                 err_arr = errors[inds == bin_idx]
             if len(bin_arr) > 0:
-                new_value.append([np.mean(bin_arr)])
-                new_time.append([np.mean(tim_arr)])
+                new_value.append(np.mean(bin_arr))
+                new_time.append(np.mean(tim_arr))
                 if errors is not None:
-                    new_error.append([np.sqrt(np.sum(err_arr**2))/len(err_arr)])
+                    new_error.append(np.sqrt(np.sum(err_arr**2)) / len(err_arr))
                 seen.add(bin_idx)
 
     if errors is not None:
@@ -567,3 +759,178 @@ def moving_average(time, value, time_window, errors = None):
     else:
         return new_time, new_value
 
+def fit_simple_model(model_inst, t_f146, plot=False, outfile_suffix=''):
+    """
+    For a single BAGLE model instance, mock up some
+    Roman data, then fit the data to a simple model:
+
+    - constant for magnitude
+    - linear proper motion + parallax for x and y positions
+
+    Input
+    -----
+    model_inst : BAGLE model instance
+    t_f146 : list
+        List of times in MJD.
+
+    Return
+    ------
+    chi2_dict : dict
+        Dictionary containing the chi^2 values for m, x, y, and the DOF.
+    mod_simp_params : dict
+        Dictionary of the best-fit model parameters for this
+        simple model. Parameter names are 'x0', 'vx', 'x0e', 'vxe', 'pi', etc.
+    """
+    dat = make_roman_lightcurve(model_inst, t_f146, 
+                                mod_filt_idx=0, filter_name='F146',
+                                noise=True, verbose=False, plot=plot,
+                                outdir='lightcurves/', outfile_suffix=outfile_suffix)
+    
+    # Mean magnitude -- this is the simplest approach.
+    # Could use median or sigma clipping for more robustness. (but slower)
+    m_mod = dat['m_F146'].mean()
+    m_mod_err = dat['m_F146'].std()
+
+    # Make FlyStar Linear Model and run fit on the data. 
+    # Note that FlyStar expects +x to increase to the West. 
+    # So flip x data, then flip x output parameters. 
+    mm = motion_model.Parallax(model_inst.raL, model_inst.decL, obs='roman')
+    t_dyear = Time(dat['t_F146'], format='mjd').decimalyear
+    t0_dyear = Time(t_f146.mean(), format='mjd').decimalyear
+
+    mm_par, mm_par_err = mm.run_fit(t_dyear,
+                                    -dat['x_F146'], dat['y_F146'], 
+                                    dat['xe_F146'], dat['ye_F146'],
+                                    t0_dyear)
+    
+    # Positions in milli-arcseconds.
+    x_mod, y_mod = mm.get_pos_at_time(mm_par, [t0_dyear], t_dyear)
+    
+    # Calculate chi^2 difference between data and the simple model fit.
+    chi2_m = np.sum( ( dat['m_F146'] - m_mod)**2 / dat['me_F146']**2 )
+    chi2_x = np.sum( (-dat['x_F146'] - x_mod)**2 / dat['xe_F146']**2 )
+    chi2_y = np.sum( ( dat['y_F146'] - y_mod)**2 / dat['ye_F146']**2 )
+    chi2_dict = {'m': chi2_m, 'x': chi2_x, 'y': chi2_y, 'dof': len(dat)}
+    
+    # Make final fitted parameters for the simple model. 
+    mod_simp_params = {'m0': m_mod, 'm0e': m_mod_err,
+                       'x0': mm_par[0], 'x0e': mm_par_err[0],
+                       'vx': -mm_par[1], 'vxe': mm_par_err[1],
+                       'y0': mm_par[2], 'y0e': mm_par_err[2],
+                       'vy': mm_par[3], 'vye': mm_par_err[3],
+                       'pi': mm_par[4], 'pie': mm_par_err[4],
+                       't0': t0_dyear}
+    
+    if plot:
+        plt.figure()
+        plt.errorbar(dat['x_F146'], dat['y_F146'], 
+                     xerr=dat['xe_F146'], yerr=dat['ye_F146'], 
+                     label='Sim Data',
+                     alpha=0.05)
+        plt.plot(-x_mod, y_mod, 'k-', label='Simple Model')
+        plt.legend()
+        plt.xlabel('$\Delta\alpha$ (mas)')
+        plt.ylabel('$\Delta\delta \sin \alpha$ (mas)')
+        plt.title('Simple Model')
+
+    return chi2_dict, mod_simp_params    
+
+def fit_simple_model_to_events(event_tab, mod_inst_list, t_f146):
+    """
+    Inputs
+    ------
+    event_tab : astropy.table
+       Table of events from PopSyCLE.
+    mod_inst_list : list
+       List of BAGLE model instances, usually from
+       lightcurves.get_bagle_model_list()
+
+    Output
+    ------
+    Modifies the input event table to add new columns.
+    """
+
+    ####  Non-parallel version
+    # results = []
+    # for ii in range(len(mod_sm)):
+    #     res_ii = fit_parallel_func(ii, mod_inst_list[ii])
+    
+    #     results.append(res_ii)
+
+    ####. Parallel version
+    from multiprocessing import Pool
+    import tqdm
+
+    args = [(ii, mod_inst_list[ii], t_f146) for ii in range(len(mod_inst_list))]
+    
+    with Pool(8) as p:
+        # Use `map` or `imap` instead of `starmap` if `func` only has 1 argument
+        for item in tqdm.tqdm(p.starmap(fit_parallel_func, args), total=len(args)):
+            results.append(item)
+        
+    # with Pool(8) as p:
+    #     args = [(ii, mod_inst_list[ii], t_f146) for ii in range(len(mod_inst_list))]
+    #     results = tqdm.tqdm( p.imap_unordered(fit_parallel_func, args, chunksize=8) )
+        
+    res_lists = np.array(results).T
+    
+    # Add parameters to the event table.
+    event_tab['simp_chi2_m'] = res_lists[0]
+    event_tab['simp_chi2_x'] = res_lists[1]
+    event_tab['simp_chi2_y'] = res_lists[2]
+    event_tab['simp_m0']  = res_lists[3]
+    event_tab['simp_m0e'] = res_lists[4]
+    event_tab['simp_x0']  = res_lists[5]
+    event_tab['simp_x0e'] = res_lists[6]
+    event_tab['simp_y0']  = res_lists[7]
+    event_tab['simp_y0e'] = res_lists[8]
+    event_tab['simp_vx']  = res_lists[9]
+    event_tab['simp_vxe'] = res_lists[10]
+    event_tab['simp_vy']  = res_lists[11]
+    event_tab['simp_vye'] = res_lists[12]
+    event_tab['simp_pi']  = res_lists[13]
+    event_tab['simp_pie'] = res_lists[14]
+    event_tab['simp_t0']  = res_lists[15]
+
+    return
+
+    
+# First make a fitting function. Need this for parallelization.
+def fit_parallel_func(ii, mod, t_f146):
+    chi2_dic, mod_simp_params = fit_simple_model(mod, t_f146, outfile_suffix=f'{ii:05d}')
+    
+    results = (chi2_dic['m'], chi2_dic['x'], chi2_dic['y'],
+               mod_simp_params['m0'], mod_simp_params['m0e'],
+               mod_simp_params['x0'], mod_simp_params['x0e'],
+               mod_simp_params['y0'], mod_simp_params['y0e'],
+               mod_simp_params['vx'], mod_simp_params['vxe'],
+               mod_simp_params['vy'], mod_simp_params['vye'],
+               mod_simp_params['pi'], mod_simp_params['pie'],
+               mod_simp_params['t0'])
+    
+    return results
+
+
+def get_model_param_dicts(mod):
+    mod_params = {}
+    mod_params_fixed = {}
+
+    params_mod = mod.fitter_param_names + mod.phot_param_names
+    params_mod_fix = mod.fixed_param_names
+    
+    for par in params_mod:
+        if par.endswith('_E'):
+            mod_params[par] = getattr(mod, par[0:-2])[0]
+        elif par.endswith('_N'):
+            mod_params[par] = getattr(mod, par[0:-2])[1]
+        elif par.startswith('log'):
+            mod_params[par] = np.log10(getattr(mod, par.split('_')[1]))
+        else:
+            mod_params[par] = getattr(mod, par)
+
+
+    for par in params_mod_fix:
+        mod_params_fixed[par] = getattr(mod, par)
+           
+    return mod_params, mod_params_fixed
+    
