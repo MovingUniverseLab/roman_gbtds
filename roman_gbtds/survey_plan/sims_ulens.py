@@ -262,7 +262,7 @@ def make_roman_lightcurve(mod, t, mod_filt_idx=0, filter_name='F146',
         axs['AA'].set_title(title, fontsize=16, y=1.05)
 
         plt.savefig(f'{outdir}/roman_event_lcurves_{filter_name}_{outfile_suffix}.png')
-        plt.close('all')
+        #plt.close('all')
 
     # Save parameters to YAML file.
     model_save_file = f'{outdir}/roman_event_model_{filter_name}_{outfile_suffix}.pkl'
@@ -436,11 +436,11 @@ def plot_roman_lightcurve(mod, tab, t, mod_filt_idx, filter_name,
 
 def get_times_roman_gbtds(seasons_fast=(0, 1, 2, 7, 8, 9),
                           seasons_slow=(3, 4, 5, 6),
-                          seasons_fast_len=70, n_fields_per_set=7,
-                          n_sets_f087_fast=1, n_sets_f146_fast=44,
-                          dt_gap_fast=0,
-                          n_sets_f087_slow=0, n_sets_f146_slow=1,
-                          dt_gap_slow=10):
+                          seasons_fast_len=70.5, n_fields_per_set=6,
+                          n_sets_f087_fast=1, n_sets_f146_fast=44, dt_gap_fast=0,
+                          n_sets_f087_slow=0, n_sets_f146_slow=1, dt_gap_slow=3,
+                          t_start = Time('2027-01-01', format='isot', scale='utc'),
+                          t_end = Time('2032-01-01', format='isot', scale='utc')):
     """
     Optional
     --------
@@ -488,11 +488,8 @@ def get_times_roman_gbtds(seasons_fast=(0, 1, 2, 7, 8, 9),
                         obstime='J2000', frame='icrs')
 
     # Roman launch and survey window of 5 years.
-    # Until Roman actually launches, subtract a few years and use Gaia.
-    # t_start = Time('2027-01-01', format='isot', scale='utc')
-    # t_end = Time('2031-12-31', format='isot', scale='utc')
-    t_start = Time('2019-01-01', format='isot', scale='utc')
-    t_end = Time('2023-12-31', format='isot', scale='utc')
+    # t_start =  see input 
+    # t_end =  see input
 
     # First, get coarse daily sampling to figure out Roman visibility windows.
     t_daily = Time(np.arange(t_start.jd, t_end.jd, 1), format='jd')
@@ -861,7 +858,11 @@ def fit_simple_model_to_events(event_tab, mod_inst_list, t_f146):
     from multiprocessing import Pool
     import tqdm
 
-    args = [(ii, mod_inst_list[ii], t_f146) for ii in range(len(mod_inst_list))]
+    args = [(ii, mod_inst_list[ii], t_f146,
+             event_tab['field_id'][ii],
+             event_tab['obj_id_L'][ii],
+             event_tab['obj_id_S'][ii])
+            for ii in range(len(mod_inst_list))]
     
     with Pool(8) as p:
         # Use `map` or `imap` instead of `starmap` if `func` only has 1 argument
@@ -896,8 +897,9 @@ def fit_simple_model_to_events(event_tab, mod_inst_list, t_f146):
 
     
 # First make a fitting function. Need this for parallelization.
-def fit_parallel_func(ii, mod, t_f146):
-    chi2_dic, mod_simp_params = fit_simple_model(mod, t_f146, outfile_suffix=f'{ii:05d}')
+def fit_parallel_func(ii, mod, t_f146, field_id, obj_id_L, obj_id_S):
+    suffix = f'{field_id}_{obj_id_L:010d}_{obj_id_S:010d}'
+    chi2_dic, mod_simp_params = fit_simple_model(mod, t_f146, outfile_suffix=suffix)
     
     results = (chi2_dic['m'], chi2_dic['x'], chi2_dic['y'],
                mod_simp_params['m0'], mod_simp_params['m0e'],
@@ -933,4 +935,52 @@ def get_model_param_dicts(mod):
         mod_params_fixed[par] = getattr(mod, par)
            
     return mod_params, mod_params_fixed
+    
+def plot_noise_model(tint=57, filter_name='F146'):
+    # https: // roman.gsfc.nasa.gov / science / WFI_technical.html
+    # Zeropoints are the 57 sec point source, 5 sigma.
+    zeropoint_all = {'F062': 24.77, 'F087': 24.46, 'F106': 24.46, 'F129': 24.43,
+                     'F158': 24.36, 'F184': 23.72, 'F213': 23.14, 'F146': 25.37}
+    flux0 = 5**2 * (tint / 57.0)
+    fwhm_all = {'F062': 58.0, 'F087': 73.0, 'F106': 87.0, 'F129': 106.0,
+                'F158': 128., 'F184': 146., 'F213': 169., 'F146': 105.}
+
+    zp = zeropoint_all[filter_name]  # SNR=5
+    fwhm = fwhm_all[filter_name] # mas
+
+    # Get a grid of magnitudes
+    mag = np.arange(9, 27, 0.1)
+
+
+    ##
+    ## Photometric noise vs. mag
+    ##
+    flux = flux0 * 10 ** ((mag - zp) / -2.5)
+    snr = flux ** 0.5
+    mag_err = 1.0857 / snr
+    mag_err[mag_err < 0.01] = 0.01
+
+
+    ##
+    ## Astrometric noise vs. mag
+    ##
+    # Assign astrometric errors as FWHM / 2*SNR or 0.1 mas minimum.
+    ast_err = fwhm / (8 * snr)  # mas
+    ast_err[ast_err < 0.2] = 0.2
+
+    ##
+    ## Plot
+    ##
+    plt.close('all')
+    plt.figure(figsize=(8, 3))
+    plt.semilogy(mag, mag_err, 'k.')
+    plt.xlabel(f'{filter_name} (mag)')
+    plt.ylabel(r'$\sigma_{phot}$ (mag)')
+
+    plt.figure(figsize=(8,3))
+    plt.semilogy(mag, ast_err, 'k.')
+    plt.xlabel(f'{filter_name} (mag)')
+    plt.ylabel(r'$\sigma_{ast}$ (mas)')
+
+    return
     
