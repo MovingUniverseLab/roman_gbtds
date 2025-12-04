@@ -933,7 +933,8 @@ def get_roman_noise(mag, tint, filter_name):
     ##
     ## Astrometric noise vs. mag
     ##
-    # Assign astrometric errors as FWHM / 2*SNR or 0.1 mas minimum.
+    # Assign astrometric errors as FWHM / 8*SNR or 0.2 mas minimum.
+    # This is the McKinnon model circa 2025-12.
     ast_err = fwhm / (8 * snr)  # mas
     ast_err[ast_err < 0.2] = 0.2
     
