@@ -55,17 +55,6 @@ def make_roman_lightcurve(mod, t, mod_filt_idx=0, filter_name='F146',
         and time in MJD.
     
     """
-    # https: // roman.gsfc.nasa.gov / science / WFI_technical.html
-    # Zeropoints are the 57 sec point source, 5 sigma.
-    zeropoint_all = {'F062': 24.77, 'F087': 24.46, 'F106': 24.46, 'F129': 24.43,
-                     'F158': 24.36, 'F184': 23.72, 'F213': 23.14, 'F146': 25.37}
-    flux0 = 5**2 * (tint / 57.0)
-    fwhm_all = {'F062': 58.0, 'F087': 73.0, 'F106': 87.0, 'F129': 106.0,
-                'F158': 128., 'F184': 146., 'F213': 169., 'F146': 105.}
-
-    zp = zeropoint_all[filter_name]  # SNR=5
-    fwhm = fwhm_all[filter_name] # mas
-
     # Get all synthetic magnitude and positions from the model object.
     try:
         img, amp = mod.get_all_arrays(t, filt_idx=mod_filt_idx)
@@ -77,33 +66,17 @@ def make_roman_lightcurve(mod, t, mod_filt_idx=0, filter_name='F146',
         mag = mod.get_photometry(t, filt_idx=mod_filt_idx)
         ast = 1e3 * mod.get_astrometry(t, filt_idx=mod_filt_idx)
 
+    mag_err, ast_err = get_roman_noise(mag, tint, filter_name)
 
-    ##
-    ## Synthetic photometry with noise. Establish a photometric floor of 0.001 mag
-    ##
-    flux = flux0 * 10 ** ((mag - zp) / -2.5)
-    snr = flux ** 0.5
-    mag_err = 1.0857 / snr
-    mag_err[mag_err < 0.001] = 0.001
     if noise:
         mag += np.random.normal(0, mag_err)
 
+        ast_err = np.array([ast_err, ast_err]).T
+        ast += np.random.normal(size=ast.shape) * ast_err
+
     if verbose:
         print(f'Mean {filter_name} Mag = {mag.mean():.1f} +/- {mag_err.mean():.2f} mag')
-
-    ##
-    ## Synthetic Astrometry (in mas) with noise
-    ##
-    # Assign astrometric errors as FWHM / 2*SNR or 0.1 mas minimum.
-    ast_err = fwhm / (2 * snr)  # mas
-    ast_err = np.vstack([ast_err, ast_err]).T
-    ast_err[ast_err < 0.1] = 0.1
-    if noise:
-        ast += np.random.normal(size=ast_err.shape) * ast_err
-
-    if verbose:
         print(f'Mean {filter_name} ast err = {ast_err.mean():.2f} mas')
-
 
 
     ##
@@ -936,7 +909,8 @@ def get_model_param_dicts(mod):
            
     return mod_params, mod_params_fixed
     
-def plot_noise_model(tint=57, filter_name='F146'):
+
+def get_roman_noise(mag, tint, filter_name):
     # https: // roman.gsfc.nasa.gov / science / WFI_technical.html
     # Zeropoints are the 57 sec point source, 5 sigma.
     zeropoint_all = {'F062': 24.77, 'F087': 24.46, 'F106': 24.46, 'F129': 24.43,
@@ -947,11 +921,7 @@ def plot_noise_model(tint=57, filter_name='F146'):
 
     zp = zeropoint_all[filter_name]  # SNR=5
     fwhm = fwhm_all[filter_name] # mas
-
-    # Get a grid of magnitudes
-    mag = np.arange(9, 27, 0.1)
-
-
+    
     ##
     ## Photometric noise vs. mag
     ##
@@ -960,13 +930,22 @@ def plot_noise_model(tint=57, filter_name='F146'):
     mag_err = 1.0857 / snr
     mag_err[mag_err < 0.01] = 0.01
 
-
     ##
     ## Astrometric noise vs. mag
     ##
     # Assign astrometric errors as FWHM / 2*SNR or 0.1 mas minimum.
     ast_err = fwhm / (8 * snr)  # mas
     ast_err[ast_err < 0.2] = 0.2
+    
+    return mag_err, ast_err
+
+
+def plot_noise_model(tint=57, filter_name='F146'):
+
+    # Get a grid of magnitudes
+    mag = np.arange(9, 27, 0.1)
+
+    mag_err, ast_err = get_roman_noise(mag, tint, filter_name)
 
     ##
     ## Plot
